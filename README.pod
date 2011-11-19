@@ -59,11 +59,6 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
     $db->update( $item, {
         attrib2 => 333
     } );
-    
-    # update multiple items
-    $db->update( \@items, {
-        attrib3 => { yadda => "yadda" }
-    } );
 
 =head1 YOU SHOULD KNOW
 
