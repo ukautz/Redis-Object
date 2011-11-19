@@ -11,7 +11,7 @@ use lib "$Bin/../lib";
 
 plan skip_all => 'No REDIS_SERVER found in environment'
     unless $ENV{ REDIS_SERVER };
-plan tests => 16;
+plan tests => 19;
 
 my $TEST_PREFIX = $ENV{ REDIS_TEST_PREFIX } || "perltest";
 
@@ -39,7 +39,7 @@ my $item = $db->create( TestTable1 => {
 ok( $item && $item->id, "Entry created" );
 
 # confirm entry
-my @keys = sort $redis->keys( $db->_keyname( TestTable1 => $item->id, '*' ) );
+my @keys = get_keys( $item );
 ok(
     scalar( @keys ) == 4
     && $keys[0] eq sprintf( $TEST_PREFIX. ':testtable1:%d:_', $item->id )
@@ -47,6 +47,17 @@ ok(
     && $keys[2] eq sprintf( $TEST_PREFIX. ':testtable1:%d:attr_int', $item->id )
     && $keys[3] eq sprintf( $TEST_PREFIX. ':testtable1:%d:attr_str', $item->id ),
     "Entry valid"
+);
+
+# confirm re-read data
+$item = $db->find( TestTable1 => $item->id );
+ok( 
+    $item &&
+    ref( $item->attr_hash ) &&
+    $item->attr_hash->{ key } eq 'value' &&
+    $item->attr_str eq 'Some Value' &&
+    $item->attr_int == 123,
+    'Read values'
 );
 
 # create indexed entry
@@ -58,7 +69,7 @@ my $item2 = $db->create( TestTable2 => {
 ok( $item2 && $item2->id, "Indexed entry created" );
 
 # confirm indexed entry
-@keys = sort $redis->keys( $db->_keyname( TestTable2 => $item2->id, '*' ) );
+@keys = get_keys( $item2 );
 ok(
     scalar( @keys ) == 5
     && $keys[0] eq sprintf( $TEST_PREFIX. ':testtable2:%d:_', $item2->id )
@@ -81,7 +92,7 @@ ok(
 
 # try update for indexed attribute
 $item2->update( { attr_str => "Other Value" } );
-@keys = sort $redis->keys( $db->_keyname( TestTable2 => $item2->id, '*' ) );
+@keys = get_keys( $item2 );
 ok(
     scalar( @keys ) == 5
     && $keys[0] eq sprintf( $TEST_PREFIX. ':testtable2:%d:_', $item2->id )
@@ -91,6 +102,30 @@ ok(
     && $keys[4] eq sprintf( $TEST_PREFIX. ':testtable2:%d:attr_str', $item2->id ),
     "Indexed entry valid"
 );
+
+# try safe index values
+my $itemx = eval { $db->create( TestTable3 => {
+    regular => 'Some String Value',
+    safe    => 'SafeValue'
+} ) };
+@keys = get_keys( $itemx );
+ok(
+    $itemx &&
+    $keys[0] eq sprintf( 'perltest:testtable3:%d:_', $itemx->id ) &&
+    $keys[1] eq sprintf( 'perltest:testtable3:%d:_:regular:Some_String_Value', $itemx->id ) &&
+    $keys[2] eq sprintf( 'perltest:testtable3:%d:_:safe:SafeValue', $itemx->id ) &&
+    $keys[3] eq sprintf( 'perltest:testtable3:%d:regular', $itemx->id ) &&
+    $keys[4] eq sprintf( 'perltest:testtable3:%d:safe', $itemx->id )
+    ,
+    'Correct safe index value'
+);
+
+# try unsafe index values
+$itemx = eval { $db->create( TestTable3 => {
+    regular => 'Some String Value',
+    safe    => 'UnSafe Value'
+} ) };
+ok( ! $itemx && $@, 'Incorrect safe index value' );
 
 # create multiple entries, try search on them
 my @msg = (
@@ -137,7 +172,7 @@ ok( scalar( @result ) == 1, 'Complex search' );
 # remove item
 $db->remove( $item );
 my $item_check = $db->find( TestTable1 => $item->id );
-@keys = $redis->keys( $db->_keyname( TestTable1 => $item->id, '*' ) );
+@keys = get_keys( $item );
 ok( ! $item_check && ! @keys, "Item removed" );
 
 # count items
@@ -145,7 +180,13 @@ my $count = $db->count( 'TestTable1' );
 ok( $count == 11, 'Count items' );
 
 # truncate database
-$db->truncate( 'TestTable1' );
-$db->truncate( 'TestTable2' );
-$count = $db->count( 'TestTable1' ) + $db->count( 'TestTable2' );
-ok( ! $count, 'Table emptied' );
+$db->truncate( $_ ) for qw/ TestTable1 TestTable2 TestTable3 /;
+my $count = 0;
+$count += $db->count( $_ ) for qw/ TestTable1 TestTable2 TestTable3 /;
+ok( ! $count, 'Tables emptied' );
+
+
+sub get_keys {
+    my ( $i ) = @_;
+    return sort $redis->keys( $db->_keyname( $i->table_name => $i->id, '*' ) );
+}

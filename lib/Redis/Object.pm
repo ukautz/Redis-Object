@@ -130,8 +130,9 @@ There is also a special key/value per table, which contains an incrementing inte
 
 use Moose;
 
-use version 0.74; our $VERSION = qv( "v0.1.0" );
+use version 0.74; our $VERSION = qv( "v0.1.1" );
 
+use Moose::Util::TypeConstraints;
 use Carp qw/ croak confess /;
 use Redis;
 use Data::Serializer;
@@ -139,6 +140,35 @@ use Data::Dumper;
 
 use Redis::Object::SearchResult;
 
+
+=head1 SUBTYPES
+
+=head2 StrIndexed
+
+Indexed String type
+
+    has attrib => ( isa => "StrIndexed", is => "rw", required => 1 );
+
+=cut
+
+subtype 'StrIndexed'
+    => as 'Str';
+
+=head2 StrIndexedSafe
+
+Indexed String type, with constraints to assure/increase proability that it will not create
+errors with Redis (StrIndexed is more loose, and you can save any value)
+
+    has attrib => ( isa => "StrIndexed", is => "rw", required => 1 );
+
+=cut
+
+subtype 'StrIndexedSafe'
+    => as 'StrIndexed'
+    => where {
+        length( $_ ) < 100
+        && /^[A-Za-z0-9_-]+$/
+    };
 
 =head1 ATTRIBUTES
 
@@ -166,9 +196,11 @@ Optional prefix for all key names in Redis
 
 has prefix => ( isa => 'Str', is => 'rw', default => '' );
 
-has _redis  => ( isa => 'Redis', is => 'rw' );
-has _table_class  => ( isa => 'HashRef', is => 'rw', default => sub { {} } );
-has _serializer => ( isa => 'Data::Serializer', is => 'rw', default => sub {
+has _redis         => ( isa => 'Redis', is => 'rw' );
+has _table_class   => ( isa => 'HashRef', is => 'rw', default => sub { {} } );
+has _table_attribs => ( isa => 'HashRef[ArrayRef[Str]]', is => 'rw', default => sub { {} } );
+has _table_info    => ( isa => 'HashRef[HashRef[HashRef]]', is => 'rw', default => sub { {} } );
+has _serializer    => ( isa => 'Data::Serializer', is => 'rw', default => sub {
     Data::Serializer->new
 } );
 
@@ -198,13 +230,49 @@ sub BUILD {
     croak "tables is empty"
         unless @{ $self->tables };
     my $base_class = ref( $self );
+    
+    # init classes
+    my @classes;
     $self->_table_class( { map {
         my $class = /::/ ? $_ : "${base_class}::$_";
         eval "use $class; 1;"
             or croak "Cannot load table class '$class' ($@)";
         ( my $name = $class ) =~ s/.*:://;
-        ( $name => $class )
+        push @classes, $class;
+        ( $name => $class );
     } @{ $self->tables } } );
+    
+    # init attribs, ref-types and indices
+    foreach my $class( @classes ) {
+        
+        # get attribs
+        my $meta = $class->meta;
+        my @attribs = sort grep { !/^(?:_|id$)/ } $meta->get_attribute_list;
+        
+        # save names
+        $self->_table_attribs->{ $class } = \@attribs;
+        
+        # build info
+        my $info_ref = $self->_table_info->{ $class } = { attribs => {}, indexed => [] };
+        foreach my $attrib_name( @attribs ) {
+            
+            # init info
+            my $attrib_info_ref = $info_ref->{ attribs }->{ $attrib_name } = {};
+            
+            # get attrib meta
+            my $attrib = $meta->get_attribute( $attrib_name );
+            
+            # whether is index or not
+            my $is_indexed = $attrib->type_constraint->name eq 'StrIndexed'
+                || $attrib->type_constraint->is_subtype_of( 'StrIndexed' ) ? 1 : 0;
+            $attrib_info_ref->{ is_indexed } = $is_indexed;
+            push @{ $info_ref->{ indexed } }, $attrib_name
+                if $is_indexed;
+            
+            # whether is complex type or not
+            $attrib_info_ref->{ is_complex } = $attrib->type_constraint->is_subtype_of( 'Value' ) ? 0 : 1;
+        }
+    }
 }
 
 =head2 create $table_name, $create_ref
@@ -262,7 +330,7 @@ sub _create_or_update {
     foreach my $attrib( @$attribs_ref ) {
         $create{ $attrib } = $create_ref->{ $attrib }
             if exists $create_ref->{ $attrib };
-        my $attr = $self->_attr_is_ref( $table_name, $attrib );
+        my $attr = $self->_attrib_is_ref( $table_name, $attrib );
     }
     
     # create instance (constraints will run)
@@ -279,7 +347,7 @@ sub _create_or_update {
     
     # write index keys
     #   <table>:<id>:_:<attrib>:<value>
-    my $index_attribs_ref = $self->_get_index_attrs( $table_name );
+    my $index_attribs_ref = $self->_attribs_indexed( $table_name );
     foreach my $attrib( @$index_attribs_ref ) {
         next unless exists $create{ $attrib };
         my $idx_key = $self->_keyname( $table_name, $id, '_', $attrib );
@@ -297,7 +365,7 @@ sub _create_or_update {
     #   <table>:<id>:<attrib>
     while( my( $key, $value ) = each %create ) {
         my $keyname = $self->_keyname( $table_name, $id, $key );
-        my $value_safe = $self->_attr_is_ref( $table_name, $key )
+        my $value_safe = $self->_attrib_is_ref( $table_name, $key )
             ? $self->_serializer->serialize( {
                 ts    => $ts,
                 value => $value
@@ -339,7 +407,7 @@ sub find {
         my $attr = substr( $key, $length );
         next if $attr =~ /^_/;
         my $value = $self->_redis->get( $key );
-        if ( $self->_attr_is_ref( $table_name, $attr ) ) {
+        if ( $self->_attrib_is_ref( $table_name, $attr ) ) {
             $value = $self->_serializer->deserialize( $value )->{ value };
         }
         $create{ $attr } = $value;
@@ -446,7 +514,7 @@ sub search {
     
     # multiple filter
     else {
-        my %index_attrib = $self->_get_index_attrs( $table_name );
+        my %index_attrib = $self->_attribs_indexed( $table_name );
         while( my ( $attrib, $val ) = each %$filter ) {
             my $rval = ref( $val ) || '';
             if ( $rval eq 'CODE' ) {
@@ -568,12 +636,64 @@ sub count {
     return scalar( $self->_redis->keys( $search_keyname ) ) || 0;
 }
 
+
+# ----------------------------------------------------
+# PRIVATE HELPER METHODS
+# ----------------------------------------------------
+
+# returns actual class/package name for a table
+sub _class {
+    my ( $self, $table_name ) = @_;
+    croak "Class for table '$table_name' not registered"
+        unless defined $self->_table_class->{ $table_name };
+    return $self->_table_class->{ $table_name };
+}
+
+# returns list of attribs
 sub _attribs {
-    my ( $self, $name ) = @_;
-    my $class = $self->_table_class->{ $name };
-    my $meta = $class->meta;
-    my @attribs = grep { !/^(?:_|id$)/ } $meta->get_attribute_list();
-    return \@attribs;
+    my ( $self, $table_name ) = @_;
+    my $class = $self->_class( $table_name );
+    return $self->_table_attribs->{ $class };
+    
+    # my $meta = $class->meta;
+    # my @attribs = grep { !/^(?:_|id$)/ } $meta->get_attribute_list();
+    # return \@attribs;
+}
+
+# returns the info arg for an attrib
+sub _attrib_info {
+    my ( $self, $table_name, $attrib_name ) = @_;
+    my $class = $self->_class( $table_name );
+    croak "No such attriute '$attrib_name' for table '$table_name'"
+        unless defined $self->_table_info->{ $class }->{ attribs }->{ $attrib_name };
+    return $self->_table_info->{ $class }->{ attribs }->{ $attrib_name };
+}
+
+# returns whether an attribs is a complex datatype or not
+sub _attrib_is_ref {
+    my ( $self, $table_name, $attrib_name ) = @_;
+    return $self->_attrib_info( $table_name, $attrib_name )->{ is_complex };
+    
+    # my $attrib = $class->meta->get_attribute( $attr_name );
+    # confess "Undefined attribute '$attr_name' in '$table_name'"
+    #     unless $attrib;
+    # return ! $attrib->type_constraint->is_subtype_of( 'Value' );
+}
+
+# returns list of indexed attributes of a table
+sub _attribs_indexed {
+    my ( $self, $table_name ) = @_;
+    my $class = $self->_class( $table_name );
+    return wantarray
+        ? map { ( $_ => 1 ) } @{ $self->_table_info->{ $class }->{ indexed } }
+        : $self->_table_info->{ $class }->{ indexed };
+    
+    # my $class = $self->_table_class->{ $table_name };
+    # my @index;
+    # if ( $class->can( 'INDEX_ATTRIBUTES' ) ) {
+    #     @index = $class->INDEX_ATTRIBUTES();
+    # }
+    # return wantarray ? map{ ( $_ => 1 ) } @index : \@index;
 }
 
 sub _current_id {
@@ -594,25 +714,6 @@ sub _keyname {
         ( $self->prefix || undef ),
         @keys
     ) );
-}
-
-sub _attr_is_ref {
-    my ( $self, $table_name, $attr_name ) = @_;
-    my $class = $self->_table_class->{ $table_name };
-    my $attrib = $class->meta->get_attribute( $attr_name );
-    confess "Undefined attribute '$attr_name' in '$table_name'"
-        unless $attrib;
-    return ! $attrib->type_constraint->is_subtype_of( 'Value' );
-}
-
-sub _get_index_attrs {
-    my ( $self, $table_name ) = @_;
-    my $class = $self->_table_class->{ $table_name };
-    my @index;
-    if ( $class->can( 'INDEX_ATTRIBUTES' ) ) {
-        @index = $class->INDEX_ATTRIBUTES();
-    }
-    return wantarray ? map{ ( $_ => 1 ) } @index : \@index;
 }
 
 =head1 AUTHOR
