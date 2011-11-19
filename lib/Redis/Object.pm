@@ -2,11 +2,11 @@ package Redis::Object;
 
 =head1 NAME
 
-Redis::Object - Object oriented Redis usage
+Redis::Object - Use Redis with an ORMish interface
 
 =head1 DESCRIPTION
 
-Use Redis as an ORM.
+Implements a scaled down ORM-like interface to access Redis as a database. If you want to use Redis as a cache, use L<Redis> instead.
 
 =head1 SYNOPSIS
 
@@ -66,6 +66,52 @@ Use Redis as an ORM.
     $db->update( \@items, {
         attrib3 => { yadda => "yadda" }
     } );
+
+=head1 YOU SHOULD KNOW
+
+=head2 Searching / Sorting
+
+Redis is more than a simple key-value store - but it is no relational database, by any means. So limit your expectations towards complex searching or sorting.
+
+This interface implements searching by primary key (an integer ID, which is automatically assigened to each "row" in the database), searching
+indexed String values with compare- and prefix-search. All search capability aside from this results in a full "table" scan.
+
+=head2 Indices
+
+This interface allows you to define certain columes as indexed. Those columes should always be strings - not numbers, nor even more complex data strucutres. Those strings you can search with wildcars, such as "word*" or "w*rd*"
+
+=head2 Structure
+
+This interface will store your instances, represented by L<Redis::Object::Table>-objects, in a distinct strucuture. Do not try to use this interface with pre-existing data!
+
+The structure relates to the L<Moose> attributes of your classes. Assuming the following table-class:
+
+    package MyDB::MyTable;
+    
+    use Moose;
+    with qw/ Redis::Object::Table /;
+    
+    has somekey => ( isa => "Str", is => "rw", required => 1 );
+    has otherkey => ( isa => "Int", is => "rw", required => 1 );
+    
+    sub INDEX_ATTRIBUTES { qw/ somekey / }
+
+The resulting "rows" would look something like this
+
+    # contains the an ID timestamp, used for certain lookups
+    mytable:1:_
+    
+    # contains the values of both attributres
+    mytable:1:somekey
+    mytable:1:otherkey
+    
+    # indexed key "somekey" for fast lookup
+    mytable:1:_:somekey:The_Value
+
+There is also a special key/value per table, which contains an incrementing integer for the primary key
+
+    mytable:_id
+
 
 =cut
 
