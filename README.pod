@@ -17,15 +17,23 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
         SomeTable
     / ] } );
     
+    __PACKAGE__->make_immutable;
+    
     package MyRedisDatabase::SomeTable;
     
     use Moose;
-    extends / Redis::Object::Table /;
+    with qw/ Redis::Object::Table /;
     
     has attrib1 => ( isa => 'Str', is => 'rw', default => 'Something' );
     has attrib2 => ( isa => 'Int', is => 'rw' );
     has attrib3 => ( isa => 'HashRef', is => 'rw' );
     has attrib4 => ( isa => 'ArrayRef', is => 'rw' );
+    
+    sub INDEX_ATTRIBUTES { qw/ attrib1 / }
+    
+    __PACKAGE__->make_immutable;
+    
+    package main;
     
     # init database
     my $db = MyRedisDatabase->new(
@@ -59,6 +67,16 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
     $db->update( $item, {
         attrib2 => 333
     } );
+    $item->update( {
+        attrib1 => "Hallo"
+    } );
+    
+    # remove an item
+    $db->remove( $item );
+    $item->remove;
+    
+    # clear a table (remvoe all entries!)
+    $db->truncate( 'SomeTable' );
 
 =head1 YOU SHOULD KNOW
 
