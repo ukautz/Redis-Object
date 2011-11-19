@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 use FindBin qw/ $Bin /;
-use Test::Most;
+use Test::More;
 use Data::Dumper;
 
 use lib "$Bin/lib";
