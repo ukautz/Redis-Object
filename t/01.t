@@ -11,12 +11,12 @@ use lib "$Bin/../lib";
 
 plan skip_all => 'No REDIS_SERVER found in environment'
     unless $ENV{ REDIS_SERVER };
-plan tests => 19;
+plan tests => 22;
 
 my $TEST_PREFIX = $ENV{ REDIS_TEST_PREFIX } || "perltest";
 
 # check load redis
-use_ok( 'Redis::Object' ) || BAIL_OUT( "No need to continue" );
+use_ok( 'Redis::Object' ) || BAIL_OUT( "No need to continue, could not load Redis::Object" );
 
 # check load test database
 use_ok( 'TestDB' ) || BAIL_OUT( "No need to continue" );
@@ -26,7 +26,7 @@ my $db = eval { TestDB->new(
     server => $ENV{ REDIS_SERVER },
     prefix => $TEST_PREFIX,
 ); };
-ok( $db, "Database inited" ) || BAIL_OUT( "No need to continue: $@" );
+ok( $db, "Database inited" ) || BAIL_OUT( "No need to continue, could not init database: $@" );
 
 my $redis = $db->_redis;
 
@@ -151,6 +151,39 @@ foreach my $table_name( qw/ TestTable1 TestTable2 / ) {
     ok( $found_count == 5, $msg );
 }
 
+# count items
+my $count = $db->count( 'TestTable1' );
+ok( $count == 12, 'Count items' );
+
+# use reset with search
+my $result1 = $db->search( TestTable1 => {
+    attr_str => "Item 1*"
+} );
+my $count1 = 0;
+while( $result1->next ) { $count1++ }
+$result1->reset;
+my $count2 = 0;
+my $first_item;
+while( my $item = $result1->next ) { $first_item ||= $item; $count2++ }
+$first_item->remove;
+my $count3 = 0;
+$result1->reset;
+while( $result1->next ) { $count3++ }
+ok(
+    $count1 == 5 && $count1 == $count2 && $count2 == $count3 + 1,
+    "Reset search"
+);
+
+# run update all
+$result1->reset;
+$result1->update_all( {
+    attr_int => 123
+} );
+$result1->reset;
+my $count_update = 0;
+while( $result1->next ) { $count_update++ if $_->attr_int == 123 }
+ok( $count3 == $count_update, "Update all" );
+
 # search with single sub
 my @result = $db->search( TestTable1 => sub {
     my ( $self ) = @_;
@@ -169,19 +202,28 @@ ok( scalar( @result ) == 1, 'Search with sub' );
 } )->all;
 ok( scalar( @result ) == 1, 'Complex search' );
 
-# remove item
+# remove single item
 $db->remove( $item );
 my $item_check = $db->find( TestTable1 => $item->id );
 @keys = get_keys( $item );
-ok( ! $item_check && ! @keys, "Item removed" );
+ok( ! $item_check && ! @keys, "Single item removed" );
 
-# count items
-my $count = $db->count( 'TestTable1' );
-ok( $count == 11, 'Count items' );
+# run remove all
+$result1 = $db->search( TestTable1 => {
+    attr_str => sub {
+        my ( $val ) = @_;
+        return $val =~ /^Item 0[234]/;
+    }
+} )->remove_all();
+$result1->reset;
+my $count_remove = 0;
+while( $result1->next ) { $count_remove++ }
+my $count_after = $db->count( 'TestTable1' );
+ok( $count_remove == 0 && $count_after == 8, "Remove multiple items" );
 
 # truncate database
 $db->truncate( $_ ) for qw/ TestTable1 TestTable2 TestTable3 /;
-my $count = 0;
+$count = 0;
 $count += $db->count( $_ ) for qw/ TestTable1 TestTable2 TestTable3 /;
 ok( ! $count, 'Tables emptied' );
 

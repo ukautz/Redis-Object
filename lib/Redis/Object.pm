@@ -67,11 +67,13 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
     }
     
     # update item
-    $item->attrib1( "bla" );
-    $db->update( $item, {
+    $item->attrib1( "bla" ); # set directly, will be persisted in the next update
+    $db->update( $item, { # set additonal
         attrib2 => 333
     } );
-    $item->update( {
+    
+    $item->attrib2( 999 );
+    $item->update( { # call update on the item, with additional new values
         attrib1 => "Hallo"
     } );
     
@@ -86,7 +88,7 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
 
 =head2 Searching / Sorting
 
-Redis is more than a simple key-value store - but it is no relational database, by any means. So limit your expectations towards complex searching or sorting.
+Redis is more than a simple key-value store - but it is no relational database, by any means. So limit your expectations towards complex searching or sorting (actually, there is no sorting at all, yet).
 
 This interface implements searching by primary key (an integer ID, which is automatically assigened to each "row" in the database), searching
 indexed String values with compare- and prefix-search. All search capability aside from this results in a full "table" scan.
@@ -103,7 +105,7 @@ Can contain anything you want - howver, it is not guranteed, that this index wil
 
 =item * StrIndexedSafe
 
-Can only contain safe characters C<"a".."z", "A".."Z" and 0..9>. Also the length is limited to 128 characters. However, you can L<possibly use|http://systoilet.wordpress.com/2010/08/09/redis-vs-memcached/> very long keys in redis, but concidering performance you should not. Also you should account for the prefix length (composed of the prefix, the table name and the attribute name).
+Can only contain safe characters C<"a".."z", "A".."Z"> and C<0..9>. Also the length is limited to 256 characters. However, you can L<possibly use|http://systoilet.wordpress.com/2010/08/09/redis-vs-memcached/> very long keys in redis. Also you should account for the prefix length (composed of the prefix, the table name and the attribute name). However, if you need longer contents, go with I<StrIndexed>.
 
 =back
 
@@ -134,7 +136,7 @@ Using the search
 
 =head2 Structure
 
-This interface will store your instances, represented by L<Redis::Object::Table>-objects, in a distinct strucuture. Do not try to use this interface with pre-existing data!
+This interface will store your instances, represented by L<Redis::Object::Table>-objects, in a distinct structure. Do not try to use this interface with pre-existing data! Also modifying the data manually later on is at your own risk!
 
 The structure relates to the L<Moose> attributes of your classes. Assuming the following table-class:
 
@@ -143,69 +145,46 @@ The structure relates to the L<Moose> attributes of your classes. Assuming the f
     use Moose;
     with qw/ Redis::Object::Table /;
     
-    has somekey => ( isa => "StrIndexedSafe", is => "rw", required => 1 );
+    has somekey => ( isa => "StrIndexed", is => "rw", required => 1 );
     has otherkey => ( isa => "Int", is => "rw", required => 1 );
 
-The resulting "rows" would look something like this
+Assumnug you create an create like so:
+
+    $db->create( MyTable => {
+        somekey => "Some Content",
+        otherkey => 123
+    } );
+
+The resulting "rows" for the entry (with the ID C<999>) would look something like this:
 
     # contains the an ID timestamp, used for certain lookups
-    mytable:1:_
+    mytable:999:_ # = timestamp
     
-    # contains the values of both attributres
-    mytable:1:somekey
-    mytable:1:otherkey
+    # contains the values of both attributes
+    mytable:999:somekey #  Some Content
+    mytable:999:otherkey # = 123
     
     # indexed key "somekey" for fast lookup
-    mytable:1:_:somekey:The_Value
+    mytable:999:_:somekey:Some_Content # timestamp
 
-There is also a special key/value per table, which contains an incrementing integer for the primary key
+There is also a special key/value per table, which contains an incrementing integer (the "primary key")
 
-    mytable:_id
-
+    mytable:_id # = last id
 
 =cut
 
 use Moose;
 
-use version 0.74; our $VERSION = qv( "v0.1.1" );
+use version 0.74; our $VERSION = qv( "v0.1.2" );
 
-use Moose::Util::TypeConstraints;
 use Carp qw/ croak confess /;
 use Redis;
 use Data::Serializer;
 use Data::Dumper;
 
+use Redis::Object::Types;
 use Redis::Object::SearchResult;
 
-
-=head1 SUBTYPES
-
-=head2 StrIndexed
-
-Indexed String type
-
-    has attrib => ( isa => "StrIndexed", is => "rw", required => 1 );
-
-=cut
-
-subtype 'StrIndexed'
-    => as 'Str';
-
-=head2 StrIndexedSafe
-
-Indexed String type, with constraints to assure/increase proability that it will not create
-errors with Redis (StrIndexed is more loose, and you can save any value)
-
-    has attrib => ( isa => "StrIndexed", is => "rw", required => 1 );
-
-=cut
-
-subtype 'StrIndexedSafe'
-    => as 'StrIndexed'
-    => where {
-        length( $_ ) <= 128
-        && /^[A-Za-z0-9_-]+$/
-    };
 
 =head1 ATTRIBUTES
 
@@ -216,6 +195,14 @@ Defaults to 127.0.0.1:6379
 =cut
 
 has server => ( isa => 'Str', is => 'rw', default => '127.0.0.1:6379' );
+
+=head2 server_args
+
+Additional args forwarded to the L<Redis/new> method.
+
+=cut
+
+has server_args => ( isa => 'HashRef', is => 'rw', default => sub { {} } );
 
 =head2 tables
 
@@ -263,7 +250,10 @@ Arrayref of table names. A table has to be implemented as a perl module with the
 
 sub BUILD {
     my ( $self ) = @_;
-    $self->_redis( Redis->new( server => $self->server ) );
+    $self->_redis( Redis->new(
+        server => $self->server,
+        %{ $self->server_args }
+    ) );
     croak "tables is empty"
         unless @{ $self->tables };
     my $base_class = ref( $self );
@@ -310,6 +300,14 @@ sub BUILD {
             $attrib_info_ref->{ is_complex } = $attrib->type_constraint->is_subtype_of( 'Value' ) ? 0 : 1;
         }
     }
+}
+
+# cleanup
+
+sub DEMOLISH {
+    my ( $self ) = @_;
+    eval { $self->_redis->quit }
+        if $self->_redis;
 }
 
 =head2 create $table_name, $create_ref
@@ -486,6 +484,8 @@ A ref to a grep-like sub. Example:
         return 0;
     };
 
+A whole table scan will be performed
+
 =head4 HashRef
 
 A subset of keys and value constraints, Example:
@@ -508,6 +508,8 @@ A subset of keys and value constraints, Example:
             return $value =~ /^xx/ && length( $value ) > 99;
         }
     }
+
+Searches on indexed attributes (of the type L<Str)
 
 =head3 $args_ref
 
@@ -606,6 +608,7 @@ sub search {
         _super      => $self,
         _filter     => \@filter,
         _and_search => $args_ref->{ or_search } ? 0 : 1,
+        _search     => [ $filter, $args_ref ],
         ( scalar %pre_ids || ( $use_pre_ids && ! $args_ref->{ or_search } )
             ? ( _subset => [ keys %pre_ids ] )
             : ()
@@ -663,7 +666,7 @@ sub truncate {
 
 =head2 count
 
-Returns amount of entries in a tbale
+Returns the total amount of entries in a table.
 
 =cut
 
@@ -733,18 +736,21 @@ sub _attribs_indexed {
     # return wantarray ? map{ ( $_ => 1 ) } @index : \@index;
 }
 
+# returns the current primary key ID
 sub _current_id {
     my ( $self, $name ) = @_;
     my $keyname = $self->_keyname( $name, qw/ _id / );
     return $self->_redis->get( $keyname ) || 0;
 }
 
+# increments the primary key ID and returns the next (free) ID
 sub _next_id {
     my ( $self, $name ) = @_;
     my $keyname = $self->_keyname( $name, qw/ _id / );
     return $self->_redis->incr( $keyname );
 }
 
+# build keyname
 sub _keyname {
     my ( $self, @keys ) = @_;
     return join( ':', map { $_ = lc( $_ ); s/\s/_/g; $_; } grep { defined $_ } (

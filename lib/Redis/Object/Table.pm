@@ -10,7 +10,7 @@ Base class for all tables.
 
 =head1 SYNOPSIS
 
-    See L<Redis::Object>
+See L<Redis::Object>
 
 =cut
 
@@ -32,25 +32,11 @@ has id => ( isa => 'Int', is => 'rw' );
 # references schema, extending Redis::Object
 has _super => ( is => 'ro', required => 1, weak_ref => 1 );
 
+# name of the table
 has _table_name => ( is => 'rw', isa => 'Str', predicate => '_has_table_name' );
 
 
 =head1 METHODS
-
-=head2 INDEX_ATTRIBUTES
-
-If implemented, should return array of attribute names which should be indexed.
-
-Indexed columns are vastly faster to search via string compare or string prefix searches (does not affect other search types)
-
-Keep in mind: Changing later on the index, will not affect already written items!
-
-    sub INDEX_ATTRIBUTES { qw/ attrib1 attrib2 / }
-
-=cut
-
-sub INDEX_ATTRIBUTES {}
-
 
 =head2 update [$attr_ref]
 

@@ -1,3 +1,11 @@
+0.1.2 - 2011-11-25
+	
+	* Updated Documentation
+	* Allow additional server args for Redis-instance
+	* Added update_all, remove_all and rest method
+	* Added tests for new methods
+	* Added META.yml and MANIFEST
+
 0.1.1 - 2011-11-19
 	
 	* StrIndexed and StrIndexedSafe subtype to represent indexed strings

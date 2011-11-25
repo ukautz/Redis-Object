@@ -6,17 +6,21 @@ Redis::Object::SearchResult - Search result for Redis search
 
 =head1 DESCRIPTION
 
-Result of a search performed on a Redis database
+Result of a search performed on a Redis database over which can be iterated.
+
+=head1 DYNAMIC RESULT
+
+Keep in mind, that a Redis::Object::SearchResult has to be viewed as a "dynamic filter", rather than a "fixed set". Iterating twice the same result can lead to different results. Simply put: don't do it.
 
 =head1 SYNOPSIS
 
-    See L<Redis::Object>
+See L<Redis::Object>
 
 =cut
 
 use Moose;
 
-use version 0.74; our $VERSION = qv( "v0.1.0" );
+use version 0.74; our $VERSION = qv( "v0.1.1" );
 
 use Carp qw/ croak /;
 
@@ -24,7 +28,7 @@ use Carp qw/ croak /;
 
 =head2 table
 
-The tale searching on
+The table searching on
 
 =cut
 
@@ -46,6 +50,9 @@ has _filter => ( isa => 'ArrayRef[CodeRef]', is => 'rw', default => 0 );
 
 # references Redis::Object
 has _super => ( isa => 'Redis::Object', is => 'rw', required => 1, weak_ref => 1 );
+
+# original search, needed for reset
+has _search => ( isa => 'ArrayRef', is => 'rw', required => 1, default => sub { [] } );
 
 # possible subset searching on
 has _subset => ( isa => 'ArrayRef[Int]', is => 'rw', predicate => '_has_subset' );
@@ -72,7 +79,7 @@ sub next {
     
     # using subset
     my $item;
-    if ( $self->_has_subset ) {
+    if ( $self->_has_subset && $self->_subset ) {
         
         # whether last
         my $size = scalar @{ $self->_subset };
@@ -109,12 +116,12 @@ sub next {
     }
     
     # return the found item
-    return $item;
+    return $_ = $item;
 }
 
 =head2 all
 
-Returns all found items as an array
+Returns all found items as an array.
 
 =cut
 
@@ -126,6 +133,73 @@ sub all {
     }
     return @all;
 }
+
+=head2 reset
+
+Reset to first position. Keep in mind, that a search result could have been changed in between, so iterating a second time can result in a different set of items.
+
+    while( my $item = $result->next ) {
+        # ..
+    }
+    $result->reset;
+    whiel( my $item = $result->next ) {
+        # ..
+    }
+
+=cut
+
+sub reset {
+    my ( $self ) = @_;
+    my $class = ref $self;
+    my $meta = $class->meta;
+    my $new_search = $self->_super->search( $self->table, @{ $self->_search } );
+    foreach my $attrib( $meta->get_attribute_list ) {
+        $self->{ $attrib } = $new_search->$attrib();
+    }
+    return $self;
+}
+
+=head2 update_all $update_ref
+
+Update all items in the result
+
+    my $result = $db->search( TableName => { .. } );
+    $result->update_all( { attrib_name => $value } );
+
+I<You need to reset the result afterwards, if you want to iterate over it again!>
+
+=head3 $update_ref
+
+A hashref containing the data for update
+
+=cut
+
+sub update_all {
+    my ( $self, $update_ref ) = @_;
+    return $self unless $update_ref;
+    while( my $item = $self->next ) {
+        $item->update( $update_ref );
+    }
+    return $self;
+}
+
+=head2 remove_all
+
+Delete all items in the result set.
+
+Read the note about dynamic L<search results|Redis::Object::SearchResult/"DYNAMIC RESULT">.
+
+=cut
+
+sub remove_all {
+    my ( $self ) = @_;
+    while( my $item = $self->next ) {
+        $item->remove;
+    }
+    return $self;
+}
+
+
 
 =head1 AUTHOR
 
