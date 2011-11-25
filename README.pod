@@ -25,11 +25,11 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
     with qw/ Redis::Object::Table /;
     
     has attrib1 => ( isa => 'Str', is => 'rw', default => 'Something' );
-    has attrib2 => ( isa => 'Int', is => 'rw' );
-    has attrib3 => ( isa => 'HashRef', is => 'rw' );
-    has attrib4 => ( isa => 'ArrayRef', is => 'rw' );
-    
-    sub INDEX_ATTRIBUTES { qw/ attrib1 / }
+    has attrib2 => ( isa => 'StrIndexed', is => 'rw', required => 1 );
+    has attrib3 => ( isa => 'StrIndexedSafe', is => 'rw', required => 1 );
+    has attrib4 => ( isa => 'Int', is => 'rw' );
+    has attrib5 => ( isa => 'HashRef', is => 'rw' );
+    has attrib6 => ( isa => 'ArrayRef', is => 'rw' );
     
     __PACKAGE__->make_immutable;
     
@@ -43,9 +43,11 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
     # create item
     my $item = $db->create( SomeTable => {
         attrib1 => "Hello",
-        attrib2 => 123,
-        attrib3 => { something => "serializeable" },
-        attrib4 => [ 1..99 ]
+        attrib2 => "Will be indexed",
+        attrib3 => "Will-too-be-indexed",
+        attrib4 => 123,
+        attrib5 => { something => "serializeable" },
+        attrib6 => [ 1..99 ]
     } );
     print "Created ". $item->id;
     
@@ -63,11 +65,13 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
     }
     
     # update item
-    $item->attrib1( "bla" );
-    $db->update( $item, {
+    $item->attrib1( "bla" ); # set directly, will be persisted in the next update
+    $db->update( $item, { # set additonal
         attrib2 => 333
     } );
-    $item->update( {
+    
+    $item->attrib2( 999 );
+    $item->update( { # call update on the item, with additional new values
         attrib1 => "Hallo"
     } );
     
@@ -82,46 +86,87 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
 
 =head2 Searching / Sorting
 
-Redis is more than a simple key-value store - but it is no relational database, by any means. So limit your expectations towards complex searching or sorting.
+Redis is more than a simple key-value store - but it is no relational database, by any means. So limit your expectations towards complex searching or sorting (actually, there is no sorting at all, yet).
 
 This interface implements searching by primary key (an integer ID, which is automatically assigened to each "row" in the database), searching
 indexed String values with compare- and prefix-search. All search capability aside from this results in a full "table" scan.
 
 =head2 Indices
 
-This interface allows you to define certain columes as indexed. Those columes should always be strings - not numbers, nor even more complex data strucutres. Those strings you can search with wildcars, such as "word*" or "w*rd*"
+This interface allows you to define certain columes as indexed. Those columes have to be of the following tyhoes:
 
-=head2 Structure
+=over
 
-This interface will store your instances, represented by L<Redis::Object::Table>-objects, in a distinct strucuture. Do not try to use this interface with pre-existing data!
+=item * StrIndexed
 
-The structure relates to the L<Moose> attributes of your classes. Assuming the following table-class:
+Can contain anything you want - howver, it is not guranteed, that this index will really work in if you use special chars, which (i had no tested and) are not searchable by the wildcard-keysearch. B<Use on your own risk and run your own tests!>
 
-    package MyDB::MyTable;
+=item * StrIndexedSafe
+
+Can only contain safe characters C<"a".."z", "A".."Z"> and C<0..9>. Also the length is limited to 256 characters. However, you can L<possibly use|http://systoilet.wordpress.com/2010/08/09/redis-vs-memcached/> very long keys in redis. Also you should account for the prefix length (composed of the prefix, the table name and the attribute name). However, if you need longer contents, go with I<StrIndexed>.
+
+=back
+
+The indices can be search with a wildcard search, such as C<Something*> or even C<Some*thing*>.
+
+=head3 Example
+
+The table
+
+    package MyRedisDatabase::MyTable;
     
     use Moose;
     with qw/ Redis::Object::Table /;
     
-    has somekey => ( isa => "Str", is => "rw", required => 1 );
-    has otherkey => ( isa => "Int", is => "rw", required => 1 );
-    
-    sub INDEX_ATTRIBUTES { qw/ somekey / }
+    has indexedkey => ( isa => "StrIndexed", is => "rw", required => 1 );
+    has safeindexedkey => ( isa => "StrIndexedSafe", is => "rw", required => 1 );
 
-The resulting "rows" would look something like this
+Using the search
+
+    $db->create( MyTable => {
+        indexed => "Some content",
+        safeindexedkey => "Some-safe-content"
+    } );
+    my $result = $db->search( MyTable => {
+        safeindexedkey => "Some*"
+    } );
+    while( my $item = $result->next ) { .. }
+
+=head2 Structure
+
+This interface will store your instances, represented by L<Redis::Object::Table>-objects, in a distinct structure. Do not try to use this interface with pre-existing data! Also modifying the data manually later on is at your own risk!
+
+The structure relates to the L<Moose> attributes of your classes. Assuming the following table-class:
+
+    package MyRedisDatabase::MyTable;
+    
+    use Moose;
+    with qw/ Redis::Object::Table /;
+    
+    has somekey => ( isa => "StrIndexed", is => "rw", required => 1 );
+    has otherkey => ( isa => "Int", is => "rw", required => 1 );
+
+Assumnug you create an create like so:
+
+    $db->create( MyTable => {
+        somekey => "Some Content",
+        otherkey => 123
+    } );
+
+The resulting "rows" for the entry (with the ID C<999>) would look something like this:
 
     # contains the an ID timestamp, used for certain lookups
-    mytable:1:_
+    mytable:999:_ # = timestamp
     
-    # contains the values of both attributres
-    mytable:1:somekey
-    mytable:1:otherkey
+    # contains the values of both attributes
+    mytable:999:somekey #  Some Content
+    mytable:999:otherkey # = 123
     
     # indexed key "somekey" for fast lookup
-    mytable:1:_:somekey:The_Value
+    mytable:999:_:somekey:Some_Content # timestamp
 
-There is also a special key/value per table, which contains an incrementing integer for the primary key
+There is also a special key/value per table, which contains an incrementing integer (the "primary key")
 
-    mytable:_id
-
+    mytable:_id # = last id
 
 =cut
