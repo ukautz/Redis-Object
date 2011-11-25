@@ -27,11 +27,11 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
     with qw/ Redis::Object::Table /;
     
     has attrib1 => ( isa => 'Str', is => 'rw', default => 'Something' );
-    has attrib2 => ( isa => 'Int', is => 'rw' );
-    has attrib3 => ( isa => 'HashRef', is => 'rw' );
-    has attrib4 => ( isa => 'ArrayRef', is => 'rw' );
-    
-    sub INDEX_ATTRIBUTES { qw/ attrib1 / }
+    has attrib2 => ( isa => 'StrIndexed', is => 'rw', required => 1 );
+    has attrib3 => ( isa => 'StrIndexedSafe', is => 'rw', required => 1 );
+    has attrib4 => ( isa => 'Int', is => 'rw' );
+    has attrib5 => ( isa => 'HashRef', is => 'rw' );
+    has attrib6 => ( isa => 'ArrayRef', is => 'rw' );
     
     __PACKAGE__->make_immutable;
     
@@ -45,9 +45,11 @@ Implements a scaled down ORM-like interface to access Redis as a database. If yo
     # create item
     my $item = $db->create( SomeTable => {
         attrib1 => "Hello",
-        attrib2 => 123,
-        attrib3 => { something => "serializeable" },
-        attrib4 => [ 1..99 ]
+        attrib2 => "Will be indexed",
+        attrib3 => "Will-too-be-indexed",
+        attrib4 => 123,
+        attrib5 => { something => "serializeable" },
+        attrib6 => [ 1..99 ]
     } );
     print "Created ". $item->id;
     
@@ -91,7 +93,44 @@ indexed String values with compare- and prefix-search. All search capability asi
 
 =head2 Indices
 
-This interface allows you to define certain columes as indexed. Those columes should always be strings - not numbers, nor even more complex data strucutres. Those strings you can search with wildcars, such as "word*" or "w*rd*"
+This interface allows you to define certain columes as indexed. Those columes have to be of the following tyhoes:
+
+=over
+
+=item * StrIndexed
+
+Can contain anything you want - howver, it is not guranteed, that this index will really work in if you use special chars, which (i had no tested and) are not searchable by the wildcard-keysearch. B<Use on your own risk and run your own tests!>
+
+=item * StrIndexedSafe
+
+Can only contain safe characters C<"a".."z", "A".."Z" and 0..9>. Also the length is limited to 128 characters. However, you can L<possibly use|http://systoilet.wordpress.com/2010/08/09/redis-vs-memcached/> very long keys in redis, but concidering performance you should not. Also you should account for the prefix length (composed of the prefix, the table name and the attribute name).
+
+=back
+
+The indices can be search with a wildcard search, such as C<Something*> or even C<Some*thing*>.
+
+=head3 Example
+
+The table
+
+    package MyRedisDatabase::MyTable;
+    
+    use Moose;
+    with qw/ Redis::Object::Table /;
+    
+    has indexedkey => ( isa => "StrIndexed", is => "rw", required => 1 );
+    has safeindexedkey => ( isa => "StrIndexedSafe", is => "rw", required => 1 );
+
+Using the search
+
+    $db->create( MyTable => {
+        indexed => "Some content",
+        safeindexedkey => "Some-safe-content"
+    } );
+    my $result = $db->search( MyTable => {
+        safeindexedkey => "Some*"
+    } );
+    while( my $item = $result->next ) { .. }
 
 =head2 Structure
 
@@ -99,15 +138,13 @@ This interface will store your instances, represented by L<Redis::Object::Table>
 
 The structure relates to the L<Moose> attributes of your classes. Assuming the following table-class:
 
-    package MyDB::MyTable;
+    package MyRedisDatabase::MyTable;
     
     use Moose;
     with qw/ Redis::Object::Table /;
     
-    has somekey => ( isa => "Str", is => "rw", required => 1 );
+    has somekey => ( isa => "StrIndexedSafe", is => "rw", required => 1 );
     has otherkey => ( isa => "Int", is => "rw", required => 1 );
-    
-    sub INDEX_ATTRIBUTES { qw/ somekey / }
 
 The resulting "rows" would look something like this
 
@@ -166,7 +203,7 @@ errors with Redis (StrIndexed is more loose, and you can save any value)
 subtype 'StrIndexedSafe'
     => as 'StrIndexed'
     => where {
-        length( $_ ) < 100
+        length( $_ ) <= 128
         && /^[A-Za-z0-9_-]+$/
     };
 

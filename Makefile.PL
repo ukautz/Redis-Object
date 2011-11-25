@@ -11,11 +11,13 @@ WriteMakefile(
     VERSION_FROM => 'lib/Redis/Object.pm',
     ABSTRACT     => 'Redis object oriented access',
     AUTHOR       => 'Ulrich Kautz <uk@fortrabbit.de>',
-
-    PREREQ_PM => {
+    LICENSE      => "perl",
+    PREREQ_PM    => {
         'Redis' => 0,
         'Data::Serializer' => 0,
         'Moose' => '2.0.0'
     },
-    test => {TESTS => 't/*.t'}
+    test         => {
+        TESTS => 't/*.t'
+    }
 );
